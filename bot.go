@@ -25,6 +25,9 @@ type Application struct {
 type UserApplicationGroup []Application
 
 var applications map[int]UserApplicationGroup
+var reviewedApplications map[int]UserApplicationGroup
+
+var roleAppReviewer string = "1358026605330563185"
 
 // This function will be called when the bot is ready
 func ready(s *discordgo.Session, r *discordgo.Ready) {
@@ -48,14 +51,6 @@ func RegisterCommands(s *discordgo.Session) {
 		{
 			Name:        "review",
 			Description: "Enters you into application reviewing mode. Administrators only",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "link",
-					Description: "The link to your application",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    true,
-				},
-			},
 		},
 	}
 
@@ -98,6 +93,36 @@ func submitApplication(user *discordgo.Member, link string) error {
 	}
 	//discordgo.user is a pointer remember that
 	return nil
+}
+
+func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if len(applications) > 0 {
+		for _, appgroup := range applications {
+			if len(appgroup) > 0 {
+				application := appgroup[0]
+				videoID := utils.ExtractYouTubeID(application.Link)
+
+				thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
+
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Embeds: []*discordgo.MessageEmbed{&discordgo.MessageEmbed{
+							Title:       fmt.Sprintf(application.Author, "'s application"),
+							Description: application.Link,
+							Color:       0x00ff7b,
+							Image: &discordgo.MessageEmbedImage{
+								URL: thumbnailURL,
+							},
+						}},
+						Flags: discordgo.MessageFlagsEphemeral,
+					},
+				})
+			}
+
+			break
+		}
+	}
 }
 
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -157,6 +182,25 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 					},
 				})
 			}
+		case "review":
+			hasRole := false
+			for _, roleID := range i.Member.Roles {
+				if roleID == roleAppReviewer {
+					hasRole = true
+					break
+				}
+			}
+			if !hasRole {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "You do not have permission to do this!",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+			go serveApplication(s, i)
 		default:
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
