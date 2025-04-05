@@ -8,6 +8,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
+	"midas.com/bot/utils"
 )
 
 // Bot Token (You need to replace this with your bot's token)
@@ -18,8 +19,7 @@ var rds *redis.Client
 
 type Application struct {
 	Link   string
-	Author *discordgo.User
-	ID     string
+	Author *discordgo.Member
 }
 
 type UserApplicationGroup []Application
@@ -45,6 +45,18 @@ func RegisterCommands(s *discordgo.Session) {
 				},
 			},
 		},
+		{
+			Name:        "review",
+			Description: "Enters you into application reviewing mode. Administrators only",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "link",
+					Description: "The link to your application",
+					Type:        discordgo.ApplicationCommandOptionString,
+					Required:    true,
+				},
+			},
+		},
 	}
 
 	_, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, guildid, commands)
@@ -55,14 +67,13 @@ func RegisterCommands(s *discordgo.Session) {
 	}
 }
 
-func submitApplication(interaction *discordgo.InteractionCreate, link string) error {
+func submitApplication(user *discordgo.Member, link string) error {
 	app := Application{
 		Link:   link,
-		Author: interaction.User,
-		ID:     interaction.User.ID,
+		Author: user,
 	}
 
-	id, err := strconv.Atoi(interaction.User.ID)
+	id, err := strconv.Atoi(user.User.ID)
 	if err != nil {
 		fmt.Println("Failed to convert UserID string to integer")
 		return err
@@ -70,7 +81,7 @@ func submitApplication(interaction *discordgo.InteractionCreate, link string) er
 
 	appgroup, exists := applications[id]
 	if !exists {
-		appgroup = make(UserApplicationGroup, 1, 1)
+		appgroup = make(UserApplicationGroup, 1)
 	}
 	appgroup = append(appgroup, app)
 
@@ -80,9 +91,9 @@ func submitApplication(interaction *discordgo.InteractionCreate, link string) er
 		return err
 	}
 
-	err = rds.HSet("applications", interaction.User.ID, jsonString).Err()
+	err = rds.HSet("applications", user.User.ID, jsonString).Err()
 	if err != nil {
-		fmt.Println("could not set data in hash: %v", err)
+		fmt.Printf("could not set data in hash: %v", err)
 		return err
 	}
 	//discordgo.user is a pointer remember that
@@ -100,23 +111,49 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				message = i.ApplicationCommandData().Options[0].StringValue()
 			}
 
-			if strings.Contains(message, "https://www.youtube.com") || strings.Contains(message, "https://www.youtu.be") {
+			if strings.Contains(message, "https://www.youtube.com") || strings.Contains(message, "https://www.youtu.be") || strings.Contains(message, "https://youtu.be") || strings.Contains(message, "https://youtube.com") {
+				if i.Member != nil {
+					err := submitApplication(i.Member, message)
+					var embed discordgo.MessageEmbed
 
-				embed := discordgo.MessageEmbed{
-					Title:       "rizz",
-					Description: "lord",
+					videoID := utils.ExtractYouTubeID(message)
+
+					thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
+
+					if err != nil {
+						embed = discordgo.MessageEmbed{
+							Title:       "Failed to submit your application",
+							Description: "Sorry, but an error occurred while submitting your application. Please try again, and if the error persists, you can report it here.",
+							Color:       0xff5500,
+						}
+					} else {
+						embed = discordgo.MessageEmbed{
+							Title:       "Success",
+							Description: "Your application has been submitted and is waiting to be reviewed!",
+							Color:       0x00ff7b,
+							Thumbnail: &discordgo.MessageEmbedThumbnail{
+								URL: thumbnailURL,
+							},
+						}
+						//discordgo.MessageEmbed.Color
+					}
+
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Embeds: []*discordgo.MessageEmbed{&embed},
+							Flags:  discordgo.MessageFlagsEphemeral,
+						},
+					})
+				} else {
+					fmt.Println("No user detected!")
 				}
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Embeds: []*discordgo.MessageEmbed{&embed},
-					},
-				})
 			} else {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
 						Content: "Sorry, it seems there is no youtube link here! Try submitting again, but this time with a link to your application.",
+						Flags:   discordgo.MessageFlagsEphemeral,
 					},
 				})
 			}
@@ -143,6 +180,27 @@ func InitRedis() {
 		return
 	}
 	fmt.Println("Redis started successfully!")
+	// Restore Data
+	data, err := rds.HGetAll("applications").Result()
+	if err != nil {
+		fmt.Printf("Could not retrieve all applications from redis.")
+		fmt.Println(err.Error())
+	}
+	applications = make(map[int]UserApplicationGroup)
+	for field, value := range data {
+		key, err := strconv.Atoi(field)
+		if err != nil {
+			fmt.Println("Failed to convert hash key string to integer.")
+			return
+		}
+		var appgroup UserApplicationGroup
+		err = json.Unmarshal([]byte(value), &appgroup)
+		if err != nil {
+			fmt.Println("Failed to Unmarshal")
+			return
+		}
+		applications[key] = appgroup
+	}
 }
 
 func main() {
