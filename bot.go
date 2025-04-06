@@ -25,7 +25,8 @@ type Application struct {
 type UserApplicationGroup []Application
 
 var applications map[int]UserApplicationGroup
-var reviewedApplications map[int]UserApplicationGroup
+
+//var reviewedApplications map[int]UserApplicationGroup
 
 var roleAppReviewer string = "1358026605330563185"
 
@@ -95,20 +96,19 @@ func submitApplication(user *discordgo.Member, link string) error {
 	return nil
 }
 
-func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate) {
+func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate, c chan int) {
 	if len(applications) > 0 {
 		for _, appgroup := range applications {
 			if len(appgroup) > 0 {
-				application := appgroup[0]
+				application := appgroup[1]
 				videoID := utils.ExtractYouTubeID(application.Link)
-
 				thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
 
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
 						Embeds: []*discordgo.MessageEmbed{&discordgo.MessageEmbed{
-							Title:       fmt.Sprintf(application.Author, "'s application"),
+							Title:       application.Author.User.Username,
 							Description: application.Link,
 							Color:       0x00ff7b,
 							Image: &discordgo.MessageEmbedImage{
@@ -118,11 +118,15 @@ func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate) {
 						Flags: discordgo.MessageFlagsEphemeral,
 					},
 				})
+				c <- 1
 			}
-
 			break
 		}
 	}
+}
+
+func broadcastApplicationDecision() {
+
 }
 
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -200,7 +204,15 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				})
 				return
 			}
-			go serveApplication(s, i)
+			reviewingchan := make(chan int, 1)
+			for {
+				go serveApplication(s, i, reviewingchan)
+				code := <-reviewingchan
+				if code == 1 {
+					go broadcastApplicationDecision()
+				}
+			}
+
 		default:
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
