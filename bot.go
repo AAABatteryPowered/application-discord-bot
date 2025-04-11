@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
@@ -25,6 +28,8 @@ type Application struct {
 type UserApplicationGroup []Application
 
 var applications map[int]UserApplicationGroup
+
+var currentlyReviewingApp Application
 
 //var reviewedApplications map[int]UserApplicationGroup
 
@@ -96,7 +101,7 @@ func submitApplication(user *discordgo.Member, link string) error {
 	return nil
 }
 
-func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate, c chan int) {
+func serveApplication(s *discordgo.Session, c *discordgo.Channel) {
 	if len(applications) > 0 {
 		for _, appgroup := range applications {
 			if len(appgroup) > 0 {
@@ -104,21 +109,33 @@ func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate, c ch
 				videoID := utils.ExtractYouTubeID(application.Link)
 				thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
 
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Embeds: []*discordgo.MessageEmbed{&discordgo.MessageEmbed{
-							Title:       application.Author.User.Username,
-							Description: application.Link,
-							Color:       0x00ff7b,
-							Image: &discordgo.MessageEmbedImage{
-								URL: thumbnailURL,
-							},
-						}},
-						Flags: discordgo.MessageFlagsEphemeral,
+				embed := &discordgo.MessageEmbed{
+					Title:       application.Author.User.Username,
+					Description: application.Link,
+					Color:       0x00ff7b,
+					Image: &discordgo.MessageEmbedImage{
+						URL: thumbnailURL,
 					},
-				})
-				c <- 1
+				}
+
+				msg, err := s.ChannelMessageSendEmbed(c.ID, embed)
+				if err != nil {
+					fmt.Println("error sending embed:", err)
+					return
+				}
+
+				// React to the message with a ✅ emoji
+				err = s.MessageReactionAdd(c.ID, msg.ID, "✅")
+				if err != nil {
+					fmt.Println("error adding reaction:", err)
+					return
+				}
+
+				err = s.MessageReactionAdd(c.ID, msg.ID, "❌")
+				if err != nil {
+					fmt.Println("error adding reaction:", err)
+					return
+				}
 			}
 			break
 		}
@@ -127,6 +144,61 @@ func serveApplication(s *discordgo.Session, i *discordgo.InteractionCreate, c ch
 
 func broadcastApplicationDecision() {
 
+}
+
+var botCategory string = "1359830076455125185"
+var reviewSessionChannels []string
+
+func reviewApplicationCycle(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	botUser, err := s.User("@me")
+	if err != nil {
+		fmt.Println("error fetching bot user:", err)
+		return
+	}
+
+	denyAll := discordgo.PermissionOverwrite{
+		ID:   guildid,
+		Type: discordgo.PermissionOverwriteTypeRole,
+		Deny: discordgo.PermissionViewChannel,
+	}
+
+	allowUser := discordgo.PermissionOverwrite{
+		ID:    i.Member.User.ID,
+		Type:  discordgo.PermissionOverwriteTypeMember,
+		Allow: discordgo.PermissionViewChannel,
+	}
+
+	allowBot := discordgo.PermissionOverwrite{
+		ID:    botUser.ID,
+		Type:  discordgo.PermissionOverwriteTypeMember,
+		Allow: discordgo.PermissionViewChannel,
+	}
+
+	channel, err := s.GuildChannelCreateComplex(guildid, discordgo.GuildChannelCreateData{
+		Name:     fmt.Sprintf("session-%s", i.Member.User.Username),
+		Type:     discordgo.ChannelTypeGuildText,
+		ParentID: botCategory,
+		PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			&denyAll,
+			&allowUser,
+			&allowBot,
+		},
+	})
+	if err != nil {
+		fmt.Println("error creating channel:", err)
+		return
+	}
+	reviewSessionChannels = append(reviewSessionChannels, channel.ID)
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("Reviewing session created successfully in <#%s>", channel.ID),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+
+	serveApplication(s, channel)
 }
 
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -204,14 +276,30 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				})
 				return
 			}
-			reviewingchan := make(chan int, 1)
+			channelExists, err := utils.GetChannelInCategoryByName(s, guildid, botCategory, fmt.Sprintf("session-%s", i.Member.User.Username))
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			if channelExists != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: fmt.Sprintf("You already have a reviewing session in <#%s>", channelExists.ID),
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+			reviewApplicationCycle(s, i)
+			/*reviewingchan := make(chan int, 1)
 			for {
 				go serveApplication(s, i, reviewingchan)
 				code := <-reviewingchan
 				if code == 1 {
 					go broadcastApplicationDecision()
 				}
-			}
+			}*/
 
 		default:
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -277,10 +365,7 @@ func main() {
 	dg.AddHandlerOnce(func(s *discordgo.Session, r *discordgo.Ready) {
 		RegisterCommands(s)
 	})
-	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		go CommandsHandler(s, i)
-	})
-
+	dg.AddHandler(CommandsHandler)
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("Error opening connection,", err)
@@ -288,5 +373,19 @@ func main() {
 	}
 	fmt.Println("Bot is now running. Press CTRL+C to exit.")
 
-	select {}
+	// Shutdown
+
+	defer func(s *discordgo.Session) {
+		fmt.Println("Running shutdown logic...")
+		for _, id := range reviewSessionChannels {
+			s.ChannelDelete(id)
+		}
+
+		dg.Close()
+		s.Close()
+	}(dg)
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
 }
