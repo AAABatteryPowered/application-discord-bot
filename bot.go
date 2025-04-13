@@ -30,6 +30,7 @@ type UserApplicationGroup []Application
 var applications map[int]UserApplicationGroup
 
 var currentlyReviewingApp Application
+var currentlyReviewingAppMsg *discordgo.Message
 
 //var reviewedApplications map[int]UserApplicationGroup
 
@@ -142,8 +143,8 @@ func serveApplication(s *discordgo.Session, c *discordgo.Channel) {
 	}
 }
 
-func broadcastApplicationDecision() {
-
+func broadcastApplicationDecision(accepted bool, app Application) {
+	fmt.Println("huzz")
 }
 
 var botCategory string = "1359830076455125185"
@@ -199,6 +200,23 @@ func reviewApplicationCycle(s *discordgo.Session, i *discordgo.InteractionCreate
 	})
 
 	serveApplication(s, channel)
+}
+
+func ReactionHandler(s *discordgo.Session, i *discordgo.MessageReactionAdd) {
+	fmt.Println("yo")
+	msg, err := s.ChannelMessage(i.ChannelID, i.MessageID)
+	if err != nil {
+		fmt.Println("Error fetching message:", err)
+		return
+	}
+
+	if msg.Member.User.ID == s.State.User.ID && msg.ID == currentlyReviewingAppMsg.ID && msg.Member.User.ID != s.State.User.ID {
+		if i.Emoji.Name == "✅" {
+			broadcastApplicationDecision(true, currentlyReviewingApp)
+		} else if i.Emoji.Name == "❌" {
+			broadcastApplicationDecision(false, currentlyReviewingApp)
+		}
+	}
 }
 
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -357,7 +375,7 @@ func main() {
 
 	InitRedis()
 
-	intents := discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMembers
+	intents := discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMembers | discordgo.IntentsGuildMessageReactions
 
 	dg.Identify.Intents = intents
 
@@ -366,6 +384,7 @@ func main() {
 		RegisterCommands(s)
 	})
 	dg.AddHandler(CommandsHandler)
+	dg.AddHandler(ReactionHandler)
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("Error opening connection,", err)
