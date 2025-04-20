@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
+	. "midas.com/bot/applications"
+	"midas.com/bot/sessions"
 	"midas.com/bot/utils"
 )
 
@@ -20,18 +21,6 @@ const guildid = "1355623019971608706"
 
 var rds *redis.Client
 
-type Application struct {
-	Link   string
-	Author *discordgo.Member
-}
-
-type UserApplicationGroup []Application
-
-var applications map[int]UserApplicationGroup
-
-var currentlyReviewingApp Application
-var currentlyReviewingAppMsg *discordgo.Message
-
 //var reviewedApplications map[int]UserApplicationGroup
 
 var roleAppReviewer string = "1358026605330563185"
@@ -39,6 +28,7 @@ var roleAppReviewer string = "1358026605330563185"
 // This function will be called when the bot is ready
 func ready(s *discordgo.Session, r *discordgo.Ready) {
 	fmt.Println("Bot is now online!")
+	sessions.Start(s)
 }
 
 func RegisterCommands(s *discordgo.Session) {
@@ -71,17 +61,12 @@ func RegisterCommands(s *discordgo.Session) {
 
 func submitApplication(user *discordgo.Member, link string) error {
 	app := Application{
-		Link:   link,
-		Author: user,
+		Link:    link,
+		Author:  user,
+		Verdict: nil,
 	}
 
-	id, err := strconv.Atoi(user.User.ID)
-	if err != nil {
-		fmt.Println("Failed to convert UserID string to integer")
-		return err
-	}
-
-	appgroup, exists := applications[id]
+	appgroup, exists := Applications[user.User.ID]
 	if !exists {
 		appgroup = make(UserApplicationGroup, 1)
 	}
@@ -102,9 +87,10 @@ func submitApplication(user *discordgo.Member, link string) error {
 	return nil
 }
 
-func serveApplication(s *discordgo.Session, c *discordgo.Channel) {
-	if len(applications) > 0 {
-		for _, appgroup := range applications {
+func serveApplication(s *discordgo.Session, ss *sessions.Session) {
+	apps := Applications.GetAll()
+	if apps != nil {
+		for _, appgroup := range Applications {
 			if len(appgroup) > 0 {
 				application := appgroup[1]
 				videoID := utils.ExtractYouTubeID(application.Link)
@@ -119,20 +105,23 @@ func serveApplication(s *discordgo.Session, c *discordgo.Channel) {
 					},
 				}
 
-				msg, err := s.ChannelMessageSendEmbed(c.ID, embed)
+				msg, err := s.ChannelMessageSendEmbed(ss.SessionChannel, embed)
 				if err != nil {
 					fmt.Println("error sending embed:", err)
 					return
 				}
 
+				//currentlyReviewingApp = application
+				//currentlyReviewingAppMsg = msg
+
 				// React to the message with a ✅ emoji
-				err = s.MessageReactionAdd(c.ID, msg.ID, "✅")
+				err = s.MessageReactionAdd(ss.SessionChannel, msg.ID, "✅")
 				if err != nil {
 					fmt.Println("error adding reaction:", err)
 					return
 				}
 
-				err = s.MessageReactionAdd(c.ID, msg.ID, "❌")
+				err = s.MessageReactionAdd(ss.SessionChannel, msg.ID, "❌")
 				if err != nil {
 					fmt.Println("error adding reaction:", err)
 					return
@@ -143,80 +132,45 @@ func serveApplication(s *discordgo.Session, c *discordgo.Channel) {
 	}
 }
 
-func broadcastApplicationDecision(accepted bool, app Application) {
-	fmt.Println("huzz")
+func broadcastApplicationDecision(s *discordgo.Session, accepted bool, app Application) {
+	channel, err := s.UserChannelCreate(app.Author.User.ID)
+	if err != nil {
+		fmt.Println("Error creating DM channel:", err)
+		return
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       "Your application has been denied ❌",
+		Description: "Unfortunately, the application reviewing team has decided to **deny you** from the Midas SMP. Your best bet to get accepted is to reread the application rules/standards, learn some new skills and submit another new and improved application.",
+		Color:       0xff4070, // teal-ish
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "- Midas SMP Application Reviewers",
+		},
+	}
+
+	// Step 2: Send the message
+	_, err = s.ChannelMessageSendEmbed(channel.ID, embed)
+	if err != nil {
+		fmt.Println("Error sending Embed DM:", err)
+		return
+	}
 }
 
 var botCategory string = "1359830076455125185"
-var reviewSessionChannels []string
-
-func reviewApplicationCycle(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	botUser, err := s.User("@me")
-	if err != nil {
-		fmt.Println("error fetching bot user:", err)
-		return
-	}
-
-	denyAll := discordgo.PermissionOverwrite{
-		ID:   guildid,
-		Type: discordgo.PermissionOverwriteTypeRole,
-		Deny: discordgo.PermissionViewChannel,
-	}
-
-	allowUser := discordgo.PermissionOverwrite{
-		ID:    i.Member.User.ID,
-		Type:  discordgo.PermissionOverwriteTypeMember,
-		Allow: discordgo.PermissionViewChannel,
-	}
-
-	allowBot := discordgo.PermissionOverwrite{
-		ID:    botUser.ID,
-		Type:  discordgo.PermissionOverwriteTypeMember,
-		Allow: discordgo.PermissionViewChannel,
-	}
-
-	channel, err := s.GuildChannelCreateComplex(guildid, discordgo.GuildChannelCreateData{
-		Name:     fmt.Sprintf("session-%s", i.Member.User.Username),
-		Type:     discordgo.ChannelTypeGuildText,
-		ParentID: botCategory,
-		PermissionOverwrites: []*discordgo.PermissionOverwrite{
-			&denyAll,
-			&allowUser,
-			&allowBot,
-		},
-	})
-	if err != nil {
-		fmt.Println("error creating channel:", err)
-		return
-	}
-	reviewSessionChannels = append(reviewSessionChannels, channel.ID)
-
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Reviewing session created successfully in <#%s>", channel.ID),
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
-
-	serveApplication(s, channel)
-}
 
 func ReactionHandler(s *discordgo.Session, i *discordgo.MessageReactionAdd) {
-	fmt.Println("yo")
-	msg, err := s.ChannelMessage(i.ChannelID, i.MessageID)
+	/*msg, err := s.ChannelMessage(i.ChannelID, i.MessageID)
 	if err != nil {
 		fmt.Println("Error fetching message:", err)
 		return
 	}
-
-	if msg.Member.User.ID == s.State.User.ID && msg.ID == currentlyReviewingAppMsg.ID && msg.Member.User.ID != s.State.User.ID {
+	if msg.Author.ID == s.State.User.ID && i.MessageID == currentlyReviewingAppMsg.ID && i.UserID != s.State.User.ID {
 		if i.Emoji.Name == "✅" {
-			broadcastApplicationDecision(true, currentlyReviewingApp)
+			broadcastApplicationDecision(s, true, currentlyReviewingApp)
 		} else if i.Emoji.Name == "❌" {
-			broadcastApplicationDecision(false, currentlyReviewingApp)
+			broadcastApplicationDecision(s, false, currentlyReviewingApp)
 		}
-	}
+	}*/
 }
 
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -294,23 +248,17 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				})
 				return
 			}
-			channelExists, err := utils.GetChannelInCategoryByName(s, guildid, botCategory, fmt.Sprintf("session-%s", i.Member.User.Username))
+			sessions.SessionOpen(s, i)
+			/*channelExists, err := utils.GetChannelInCategoryByName(s, guildid, botCategory, fmt.Sprintf("session-%s", i.Member.User.Username))
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
 			if channelExists != nil {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: fmt.Sprintf("You already have a reviewing session in <#%s>", channelExists.ID),
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-				return
+
 			}
 			reviewApplicationCycle(s, i)
-			/*reviewingchan := make(chan int, 1)
+			reviewingchan := make(chan int, 1)
 			for {
 				go serveApplication(s, i, reviewingchan)
 				code := <-reviewingchan
@@ -342,27 +290,7 @@ func InitRedis() {
 		return
 	}
 	fmt.Println("Redis started successfully!")
-	// Restore Data
-	data, err := rds.HGetAll("applications").Result()
-	if err != nil {
-		fmt.Printf("Could not retrieve all applications from redis.")
-		fmt.Println(err.Error())
-	}
-	applications = make(map[int]UserApplicationGroup)
-	for field, value := range data {
-		key, err := strconv.Atoi(field)
-		if err != nil {
-			fmt.Println("Failed to convert hash key string to integer.")
-			return
-		}
-		var appgroup UserApplicationGroup
-		err = json.Unmarshal([]byte(value), &appgroup)
-		if err != nil {
-			fmt.Println("Failed to Unmarshal")
-			return
-		}
-		applications[key] = appgroup
-	}
+	OnStart(rds)
 }
 
 func main() {
@@ -376,7 +304,6 @@ func main() {
 	InitRedis()
 
 	intents := discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMembers | discordgo.IntentsGuildMessageReactions
-
 	dg.Identify.Intents = intents
 
 	dg.AddHandler(ready)
@@ -385,6 +312,7 @@ func main() {
 	})
 	dg.AddHandler(CommandsHandler)
 	dg.AddHandler(ReactionHandler)
+
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("Error opening connection,", err)
@@ -396,9 +324,8 @@ func main() {
 
 	defer func(s *discordgo.Session) {
 		fmt.Println("Running shutdown logic...")
-		for _, id := range reviewSessionChannels {
-			s.ChannelDelete(id)
-		}
+
+		sessions.Shutdown()
 
 		dg.Close()
 		s.Close()
