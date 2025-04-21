@@ -82,7 +82,7 @@ func submitApplication(user *discordgo.Member, link string) error {
 		fmt.Printf("could not set data in hash: %v", err)
 		return err
 	}
-	//discordgo.user is a pointer remember that
+
 	return nil
 }
 
@@ -127,12 +127,30 @@ func handleApplicationDecision(s *discordgo.Session, accepted bool, app Applicat
 
 	app.Verdict = &accepted
 
+	appgroup, err := rds.HGet("applications", app.Author.User.ID)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	demarshalled, err := json.Unmarshal([]byte(appgroup))
+	if err != nil {
+		return
+	}
+
+	for _, v := range demarshademarshalled {
+		if v.a
+	}
+
+	rds.HDel("applications", app.Author.User.ID)
+	erkr.
+
 	_, err = s.ChannelMessageSendEmbed(channel.ID, embed)
 	if err != nil {
 		fmt.Println("Error sending Embed DM:", err)
 		return
 	}
-}
+}k
 
 var botCategory string = "1359830076455125185"
 
