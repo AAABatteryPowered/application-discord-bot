@@ -6,33 +6,57 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
+	. "midas.com/bot/datastructs"
+	"midas.com/bot/utils"
 )
 
 var rds *redis.Client
 
-type Application struct {
-	Link    string
-	Author  *discordgo.Member
-	Verdict *bool
-}
+func ShowApplication(ds *discordgo.Session, s *Session) {
+	if len(Applications) > 0 {
+		for _, appgroup := range Applications {
+			if len(appgroup) > 0 {
+				application := appgroup[1]
+				videoID := utils.ExtractYouTubeID(application.Link)
+				thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
 
-type ReviewingApplication struct {
-	App     *Application
-	EmbedID string
-}
+				embed := &discordgo.MessageEmbed{
+					Title:       application.Author.User.Username,
+					Description: application.Link,
+					Color:       0x00ff7b,
+					Image: &discordgo.MessageEmbedImage{
+						URL: thumbnailURL,
+					},
+				}
 
-type UserApplicationGroup []Application
+				msg, err := ds.ChannelMessageSendEmbed(s.SessionChannel, embed)
+				if err != nil {
+					fmt.Println("error sending embed:", err)
+					return
+				}
 
-type allApps map[string]UserApplicationGroup
+				reviewingapp := &ReviewingApplication{
+					App:     &application,
+					EmbedID: msg.ID,
+				}
 
-var Applications allApps
-var reviewingApps map[string]Application
+				s.CurrentApp = reviewingapp
 
-func (apps allApps) GetAll() allApps {
-	if !(len(reviewingApps) > 0) {
-		return nil
+				err = ds.MessageReactionAdd(s.SessionChannel, msg.ID, "✅")
+				if err != nil {
+					fmt.Println("error adding reaction:", err)
+					return
+				}
+
+				err = ds.MessageReactionAdd(s.SessionChannel, msg.ID, "❌")
+				if err != nil {
+					fmt.Println("error adding reaction:", err)
+					return
+				}
+			}
+			break
+		}
 	}
-	return Applications
 }
 
 func OnStart(r *redis.Client) {
@@ -51,5 +75,21 @@ func OnStart(r *redis.Client) {
 			return
 		}
 		Applications[field] = appgroup
+	}
+
+	data, err = rds.HGetAll("pastapplications").Result()
+	if err != nil {
+		fmt.Printf("Could not retrieve all past applications from redis.")
+		fmt.Println(err.Error())
+	}
+	PastApplications = make(map[string]UserApplicationGroup)
+	for field, value := range data {
+		var appgroup UserApplicationGroup
+		err = json.Unmarshal([]byte(value), &appgroup)
+		if err != nil {
+			fmt.Println("Failed to Unmarshal")
+			return
+		}
+		PastApplications[field] = appgroup
 	}
 }

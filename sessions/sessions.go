@@ -5,6 +5,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	. "midas.com/bot/applications"
+	. "midas.com/bot/datastructs"
 )
 
 const guildid = "1355623019971608706"
@@ -12,22 +13,16 @@ const botCategory = "1359830076455125185"
 
 var dsgs *discordgo.Session
 
-type Session struct {
-	Owner          string
-	SessionChannel string
-	CurrentApp     *ReviewingApplication
-}
-
-var Sessions map[string]Session
+var Sessions map[string]*Session
 
 var SessionChannel chan int
 
-func SessionExists(userid string) *Session {
+func SessionExists(userid string) (chan int, chan *Session) {
 	val, exists := Sessions[userid]
 	if !exists {
-		return nil
+		return nil, nil
 	}
-	return &val
+	return val.ChannelIn, val.ChannelOut
 }
 
 func Close(ds *discordgo.Session, s *Session) error {
@@ -40,17 +35,30 @@ func Close(ds *discordgo.Session, s *Session) error {
 	return nil
 }
 
+func EnterLoop(s *Session) {
+	ShowApplication(dsgs, s)
+	for {
+		code := <-s.ChannelIn
+		if code == 1 {
+			ShowApplication(dsgs, s)
+		}
+		if code == 2 {
+			s.ChannelOut <- s
+		}
+	}
+}
+
 func SessionOpen(s *discordgo.Session, i *discordgo.InteractionCreate) (*Session, error) {
-	sessionExists := SessionExists(i.Member.User.ID)
-	if sessionExists != nil {
+	session := Sessions[i.Member.User.ID]
+	if session != nil {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("You already have a reviewing session in <#%s>", sessionExists.CurrentApp.EmbedID),
+				Content: fmt.Sprintf("You already have a reviewing session in <#%s>", session.CurrentApp.EmbedID),
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
-		return sessionExists, nil
+		return Sessions[i.Member.User.ID], nil
 	}
 
 	botUser, err := s.User("@me")
@@ -93,11 +101,13 @@ func SessionOpen(s *discordgo.Session, i *discordgo.InteractionCreate) (*Session
 	}
 
 	sess := Session{
-		i.Member.User.ID,
-		channel.ID,
-		nil,
+		Owner:          i.Member.User.ID,
+		SessionChannel: channel.ID,
+		ChannelIn:      make(chan int),
+		ChannelOut:     make(chan *Session),
+		CurrentApp:     nil,
 	}
-	Sessions[i.Member.User.ID] = sess
+	Sessions[i.Member.User.ID] = &sess
 
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -113,11 +123,11 @@ func SessionOpen(s *discordgo.Session, i *discordgo.InteractionCreate) (*Session
 
 func Shutdown() {
 	for _, session := range Sessions {
-		Close(dsgs, &session)
+		Close(dsgs, session)
 	}
 }
 
 func Start(s *discordgo.Session) {
 	dsgs = s
-	Sessions = make(map[string]Session, 0)
+	Sessions = make(map[string]*Session, 0)
 }
