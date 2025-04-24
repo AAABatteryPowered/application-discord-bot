@@ -16,7 +16,7 @@ func ShowApplication(ds *discordgo.Session, s *Session) {
 	if len(Applications) > 0 {
 		for _, appgroup := range Applications {
 			if len(appgroup) > 0 {
-				application := appgroup[1]
+				application := appgroup[0]
 				videoID := utils.ExtractYouTubeID(application.Link)
 				thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
 

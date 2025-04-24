@@ -25,7 +25,7 @@ type Session struct {
 
 type UserApplicationGroup []Application
 
-type allApps map[string]UserApplicationGroup
+type AllApps map[string]UserApplicationGroup
 
-var Applications allApps
-var PastApplications allApps
+var Applications AllApps
+var PastApplications AllApps

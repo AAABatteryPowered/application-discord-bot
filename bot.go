@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -48,6 +49,14 @@ func RegisterCommands(s *discordgo.Session) {
 			Name:        "review",
 			Description: "Enters you into application reviewing mode. Administrators only",
 		},
+		{
+			Name:        "listapps",
+			Description: "Lists every pending application. Administrators only",
+		},
+		{
+			Name:        "clearapps",
+			Description: "Deletes All Applications. Administrators only",
+		},
 	}
 
 	_, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, guildid, commands)
@@ -59,16 +68,17 @@ func RegisterCommands(s *discordgo.Session) {
 }
 
 func submitApplication(user *discordgo.Member, link string) error {
+	appgroup, exists := Applications[user.User.ID]
+	if !exists {
+		appgroup = make(UserApplicationGroup, 1)
+	}
+
 	app := Application{
 		Link:    link,
 		Author:  user,
 		Verdict: nil,
 	}
 
-	appgroup, exists := Applications[user.User.ID]
-	if !exists {
-		appgroup = make(UserApplicationGroup, 1)
-	}
 	appgroup = append(appgroup, app)
 
 	jsonString, err := json.Marshal(appgroup)
@@ -105,7 +115,6 @@ func handleApplicationDecision(s *discordgo.Session, accepted bool, app Applicat
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println(invite)
 		embed = &discordgo.MessageEmbed{
 			Title:       "Congrats! Your application has been accepted ✅",
 			Description: fmt.Sprintf("Great job on your application, as the reviewing team have decided you seem like a good fit for the server! A one time invite is attached below, and it does have verification so don't try and invite anyone else. Good luck on the server! https://discord.gg/" + invite.Code),
@@ -125,32 +134,40 @@ func handleApplicationDecision(s *discordgo.Session, accepted bool, app Applicat
 		}
 	}
 
-	app.Verdict = &accepted
+	var decidedApps UserApplicationGroup = make(UserApplicationGroup, 1)
 
-	appgroup, err := rds.HGet("applications", app.Author.User.ID)
+	fmt.Println("pluh", app)
+	for i, v := range Applications[app.Author.User.ID] {
+		if v == app {
+			fmt.Println(Applications[app.Author.User.ID])
+			Applications[app.Author.User.ID] = slices.Delete(Applications[app.Author.User.ID], i, i)
+			fmt.Println(Applications[app.Author.User.ID])
+		}
+	}
+
+	marshalled, err := json.Marshal(Applications[app.Author.User.ID])
 	if err != nil {
-		fmt.Println(err)
 		return
 	}
-
-	demarshalled, err := json.Unmarshal([]byte(appgroup))
+	err = rds.HSet("applications", app.Author.User.ID, marshalled).Err()
 	if err != nil {
 		return
 	}
-
-	for _, v := range demarshademarshalled {
-		if v.a
+	marshalled, err = json.Marshal(decidedApps)
+	if err != nil {
+		return
 	}
-
-	rds.HDel("applications", app.Author.User.ID)
-	erkr.
+	err = rds.HSet("reviewedapplications", app.Author.User.ID, marshalled).Err()
+	if err != nil {
+		return
+	}
 
 	_, err = s.ChannelMessageSendEmbed(channel.ID, embed)
 	if err != nil {
 		fmt.Println("Error sending Embed DM:", err)
 		return
 	}
-}k
+}
 
 var botCategory string = "1359830076455125185"
 
@@ -164,15 +181,19 @@ func ReactionHandler(s *discordgo.Session, i *discordgo.MessageReactionAdd) {
 		}
 		chanIn <- 2
 		sessionCopy := <-chanOut
-		fmt.Println(i.MessageID)
-		fmt.Println(sessionCopy.CurrentApp.EmbedID)
 		if sessionCopy.CurrentApp != nil {
 			if msg.Author.ID == s.State.User.ID && i.MessageID == sessionCopy.CurrentApp.EmbedID && i.UserID != s.State.User.ID {
-				chanIn <- 1
+				var state bool
 				if i.Emoji.Name == "✅" {
+					state = true
+					sessionCopy.CurrentApp.App.Verdict = &state
 					handleApplicationDecision(s, true, *sessionCopy.CurrentApp.App)
+					chanIn <- 1
 				} else if i.Emoji.Name == "❌" {
+					state = false
+					sessionCopy.CurrentApp.App.Verdict = &state
 					handleApplicationDecision(s, false, *sessionCopy.CurrentApp.App)
+					chanIn <- 1
 				}
 			}
 		}
@@ -186,7 +207,6 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 			var message string
 			if len(i.ApplicationCommandData().Options) > 0 {
-				// If the user has passed an argument for echo
 				message = i.ApplicationCommandData().Options[0].StringValue()
 			}
 
@@ -256,6 +276,16 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			Session, _ := sessions.SessionOpen(s, i)
 			sessions.EnterLoop(Session)
+		case "listapps":
+			for _, appgroup := range Applications {
+				fmt.Println(appgroup)
+			}
+		case "clearapps":
+			Applications = make(AllApps)
+			err := rds.Del("applications").Err()
+			if err != nil {
+				return
+			}
 		default:
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -312,6 +342,14 @@ func main() {
 		fmt.Println("Running shutdown logic...")
 
 		sessions.Shutdown()
+
+		for uid, appgroup := range Applications {
+			err := rds.HSet("applications", uid, appgroup).Err()
+			fmt.Println(uid, appgroup)
+			if err != nil {
+				fmt.Printf("Failed to set application for user %s: %v", uid, err)
+			}
+		}
 
 		dg.Close()
 		s.Close()
