@@ -3,9 +3,10 @@ package sessions
 import (
 	"fmt"
 
+	. "bot/applications"
+	. "bot/datastructs"
+
 	"github.com/bwmarrin/discordgo"
-	. "midas.com/bot/applications"
-	. "midas.com/bot/datastructs"
 )
 
 const guildid = "1355623019971608706"

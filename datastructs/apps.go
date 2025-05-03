@@ -15,6 +15,11 @@ type ReviewingApplication struct {
 	EmbedID string
 }
 
+type ApplicationVerdict struct {
+	App     *Application
+	Verdict bool
+}
+
 type Session struct {
 	Owner          string
 	SessionChannel string
@@ -23,9 +28,9 @@ type Session struct {
 	CurrentApp     *ReviewingApplication
 }
 
-type UserApplicationGroup []Application
+type UserApplicationGroup struct {
+	PendingApplications  []Application
+	ReviewedApplications []Application
+}
 
 type AllApps map[string]UserApplicationGroup
-
-var Applications AllApps
-var PastApplications AllApps

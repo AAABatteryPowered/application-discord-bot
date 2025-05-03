@@ -1,4 +1,4 @@
-module midas.com/bot
+module bot
 
 go 1.23.3
 

@@ -9,12 +9,13 @@ import (
 	"strings"
 	"syscall"
 
+	"bot/applications"
+	. "bot/datastructs"
+	"bot/sessions"
+	"bot/utils"
+
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
-	. "midas.com/bot/applications"
-	. "midas.com/bot/datastructs"
-	"midas.com/bot/sessions"
-	"midas.com/bot/utils"
 )
 
 // Bot Token (You need to replace this with your bot's token)
@@ -25,10 +26,9 @@ var rds *redis.Client
 
 var roleAppReviewer string = "1358026605330563185"
 
-func ready(s *discordgo.Session, r *discordgo.Ready) {
-	fmt.Println("Bot is now online!")
-	sessions.Start(s)
+func onStartup(s *discordgo.Session, r *discordgo.Ready) {
 	RegisterCommands(s)
+	applications.OnStart(rds)
 }
 
 func RegisterCommands(s *discordgo.Session) {
@@ -46,16 +46,12 @@ func RegisterCommands(s *discordgo.Session) {
 			},
 		},
 		{
-			Name:        "review",
-			Description: "Enters you into application reviewing mode. Administrators only",
+			Name:        "listallapps",
+			Description: "Lists all pending and reviewed apps.",
 		},
 		{
-			Name:        "listapps",
-			Description: "Lists every pending application. Administrators only",
-		},
-		{
-			Name:        "clearapps",
-			Description: "Deletes All Applications. Administrators only",
+			Name:        "wiperedis",
+			Description: "Wipes the whole of redis.",
 		},
 	}
 
@@ -68,32 +64,16 @@ func RegisterCommands(s *discordgo.Session) {
 }
 
 func submitApplication(user *discordgo.Member, link string) error {
-	appgroup, exists := Applications[user.User.ID]
-	if !exists {
-		appgroup = make(UserApplicationGroup, 1)
-	}
-
 	app := Application{
 		Link:    link,
 		Author:  user,
 		Verdict: nil,
 	}
+	applications.Invoke <- 1
+	applications.WriteToPending <- app
+	err := <-applications.Output
 
-	appgroup = append(appgroup, app)
-
-	jsonString, err := json.Marshal(appgroup)
-	if err != nil {
-		fmt.Println("Failed to Marshal")
-		return err
-	}
-
-	err = rds.HSet("applications", user.User.ID, jsonString).Err()
-	if err != nil {
-		fmt.Printf("could not set data in hash: %v", err)
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func handleApplicationDecision(s *discordgo.Session, accepted bool, app Application) {
@@ -134,30 +114,20 @@ func handleApplicationDecision(s *discordgo.Session, accepted bool, app Applicat
 		}
 	}
 
-	var decidedApps UserApplicationGroup = make(UserApplicationGroup, 1)
+	userappgroup := applications.Applications[app.Author.User.ID]
 
-	fmt.Println("pluh", app)
-	for i, v := range Applications[app.Author.User.ID] {
+	for i, v := range userappgroup.PendingApplications {
 		if v == app {
-			fmt.Println(Applications[app.Author.User.ID])
-			Applications[app.Author.User.ID] = slices.Delete(Applications[app.Author.User.ID], i, i)
-			fmt.Println(Applications[app.Author.User.ID])
+			userappgroup.PendingApplications = slices.Delete(userappgroup.PendingApplications, i, i)
+			break
 		}
 	}
 
-	marshalled, err := json.Marshal(Applications[app.Author.User.ID])
+	marshalled, err := json.Marshal(userappgroup)
 	if err != nil {
 		return
 	}
 	err = rds.HSet("applications", app.Author.User.ID, marshalled).Err()
-	if err != nil {
-		return
-	}
-	marshalled, err = json.Marshal(decidedApps)
-	if err != nil {
-		return
-	}
-	err = rds.HSet("reviewedapplications", app.Author.User.ID, marshalled).Err()
 	if err != nil {
 		return
 	}
@@ -184,16 +154,15 @@ func ReactionHandler(s *discordgo.Session, i *discordgo.MessageReactionAdd) {
 		if sessionCopy.CurrentApp != nil {
 			if msg.Author.ID == s.State.User.ID && i.MessageID == sessionCopy.CurrentApp.EmbedID && i.UserID != s.State.User.ID {
 				var state bool
-				if i.Emoji.Name == "✅" {
-					state = true
+				defer func() {
 					sessionCopy.CurrentApp.App.Verdict = &state
 					handleApplicationDecision(s, true, *sessionCopy.CurrentApp.App)
 					chanIn <- 1
+				}()
+				if i.Emoji.Name == "✅" {
+					state = true
 				} else if i.Emoji.Name == "❌" {
 					state = false
-					sessionCopy.CurrentApp.App.Verdict = &state
-					handleApplicationDecision(s, false, *sessionCopy.CurrentApp.App)
-					chanIn <- 1
 				}
 			}
 		}
@@ -209,34 +178,29 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			if len(i.ApplicationCommandData().Options) > 0 {
 				message = i.ApplicationCommandData().Options[0].StringValue()
 			}
-
 			if strings.Contains(message, "https://www.youtube.com") || strings.Contains(message, "https://www.youtu.be") || strings.Contains(message, "https://youtu.be") || strings.Contains(message, "https://youtube.com") {
 				if i.Member != nil {
+
 					err := submitApplication(i.Member, message)
-					var embed discordgo.MessageEmbed
 
 					videoID := utils.ExtractYouTubeID(message)
-
 					thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
 
+					var embed discordgo.MessageEmbed = discordgo.MessageEmbed{
+						Title:       "Success",
+						Description: "Your application has been submitted and is waiting to be reviewed!",
+						Color:       0x00ff7b,
+						Thumbnail: &discordgo.MessageEmbedThumbnail{
+							URL: thumbnailURL,
+						},
+					}
 					if err != nil {
 						embed = discordgo.MessageEmbed{
 							Title:       "Failed to submit your application",
 							Description: "Sorry, but an error occurred while submitting your application. Please try again, and if the error persists, you can report it here.",
 							Color:       0xff5500,
 						}
-					} else {
-						embed = discordgo.MessageEmbed{
-							Title:       "Success",
-							Description: "Your application has been submitted and is waiting to be reviewed!",
-							Color:       0x00ff7b,
-							Thumbnail: &discordgo.MessageEmbedThumbnail{
-								URL: thumbnailURL,
-							},
-						}
-						//discordgo.MessageEmbed.Color
 					}
-
 					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 						Type: discordgo.InteractionResponseChannelMessageWithSource,
 						Data: &discordgo.InteractionResponseData{
@@ -276,12 +240,23 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			Session, _ := sessions.SessionOpen(s, i)
 			sessions.EnterLoop(Session)
-		case "listapps":
-			for _, appgroup := range Applications {
-				fmt.Println(appgroup)
+		case "listallapps":
+			fmt.Println(applications.Applications)
+			for _, appgroup := range applications.Applications {
+				for _, app := range appgroup.PendingApplications {
+					fmt.Println(app)
+				}
+
 			}
-		case "clearapps":
-			Applications = make(AllApps)
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "hg",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+		case "wiperedis":
 			err := rds.Del("applications").Err()
 			if err != nil {
 				return
@@ -300,16 +275,15 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 func InitRedis() {
 	rds = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
-		Password: "", // No password set
-		DB:       0,  // Use default DB
+		Password: "",
+		DB:       0,
 	})
 	_, err := rds.Ping().Result()
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
-	fmt.Println("Redis started successfully!")
-	OnStart(rds)
+	fmt.Println("#[Redis]: Started Successfully!")
 }
 
 func main() {
@@ -325,31 +299,21 @@ func main() {
 	intents := discordgo.IntentsGuildInvites | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMembers | discordgo.IntentsGuildMessageReactions
 	dg.Identify.Intents = intents
 
-	dg.AddHandler(ready)
+	dg.AddHandler(onStartup)
 	dg.AddHandler(CommandsHandler)
-	dg.AddHandler(ReactionHandler)
+	//dg.AddHandler(ReactionHandler)
 
 	err = dg.Open()
 	if err != nil {
-		fmt.Println("Error opening connection,", err)
+		fmt.Println("#[Main]: Error opening discordgo connection: ", err)
 		return
 	}
-	fmt.Println("Bot is now running. Press CTRL+C to exit.")
+	fmt.Println("#[Main]: Bot is running successfully!")
 
 	// Shutdown
 
 	defer func(s *discordgo.Session) {
-		fmt.Println("Running shutdown logic...")
-
-		sessions.Shutdown()
-
-		for uid, appgroup := range Applications {
-			err := rds.HSet("applications", uid, appgroup).Err()
-			fmt.Println(uid, appgroup)
-			if err != nil {
-				fmt.Printf("Failed to set application for user %s: %v", uid, err)
-			}
-		}
+		fmt.Println("#[Main]: Starting shutdown logic.")
 
 		dg.Close()
 		s.Close()
