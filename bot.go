@@ -1,18 +1,14 @@
 package main
 
 import (
-	"encoding/json"
+	"bot/utils"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
-
-	"bot/applications"
-	. "bot/datastructs"
-	"bot/sessions"
-	"bot/utils"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
@@ -24,34 +20,18 @@ const guildid = "1355623019971608706"
 
 var rds *redis.Client
 
-var roleAppReviewer string = "1358026605330563185"
+var CooldownCache map[string]int = make(map[string]int)
 
 func onStartup(s *discordgo.Session, r *discordgo.Ready) {
 	RegisterCommands(s)
-	applications.OnStart(rds)
+	//applications.OnStart(rds)
 }
 
 func RegisterCommands(s *discordgo.Session) {
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "submit",
-			Description: "Submits your application.",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "link",
-					Description: "The link to your application",
-					Type:        discordgo.ApplicationCommandOptionString,
-					Required:    true,
-				},
-			},
-		},
-		{
-			Name:        "listallapps",
-			Description: "Lists all pending and reviewed apps.",
-		},
-		{
-			Name:        "wiperedis",
-			Description: "Wipes the whole of redis.",
+			Name:        "applybutton",
+			Description: "Sends the apply button message",
 		},
 	}
 
@@ -63,211 +43,248 @@ func RegisterCommands(s *discordgo.Session) {
 	}
 }
 
-func submitApplication(user *discordgo.Member, link string) error {
-	app := Application{
-		Link:    link,
-		Author:  user,
-		Verdict: nil,
-	}
-	applications.Invoke <- 1
-	applications.WriteToPending <- app
-	err := <-applications.Output
-
-	return err
-}
-
-func handleApplicationDecision(s *discordgo.Session, accepted bool, app Application) {
-	channel, err := s.UserChannelCreate(app.Author.User.ID)
-	if err != nil {
-		fmt.Println("Error creating DM channel:", err)
-		return
-	}
-
-	var embed *discordgo.MessageEmbed
-
-	if accepted {
-		invite, err := s.ChannelInviteCreate("1343336810734026835", discordgo.Invite{
-			MaxUses:   1,
-			MaxAge:    0,
-			Temporary: false,
-			Unique:    true,
-		})
-		if err != nil {
-			fmt.Println(err)
-		}
-		embed = &discordgo.MessageEmbed{
-			Title:       "Congrats! Your application has been accepted ✅",
-			Description: fmt.Sprintf("Great job on your application, as the reviewing team have decided you seem like a good fit for the server! A one time invite is attached below, and it does have verification so don't try and invite anyone else. Good luck on the server! https://discord.gg/" + invite.Code),
-			Color:       0xBAFF29,
-			Footer: &discordgo.MessageEmbedFooter{
-				Text: "- Midas SMP Application Reviewers",
-			},
-		}
-	} else {
-		embed = &discordgo.MessageEmbed{
-			Title:       "Your application has been denied ❌",
-			Description: "Unfortunately, the application reviewing team has decided to **deny you** from the Midas SMP. Your best bet to get accepted is to reread the application rules/standards, learn some new skills and submit another new and improved application.",
-			Color:       0xff4070,
-			Footer: &discordgo.MessageEmbedFooter{
-				Text: "- Midas SMP Application Reviewers",
-			},
-		}
-	}
-
-	userappgroup := applications.Applications[app.Author.User.ID]
-
-	for i, v := range userappgroup.PendingApplications {
-		if v == app {
-			userappgroup.PendingApplications = slices.Delete(userappgroup.PendingApplications, i, i)
-			break
-		}
-	}
-
-	marshalled, err := json.Marshal(userappgroup)
-	if err != nil {
-		return
-	}
-	err = rds.HSet("applications", app.Author.User.ID, marshalled).Err()
-	if err != nil {
-		return
-	}
-
-	_, err = s.ChannelMessageSendEmbed(channel.ID, embed)
-	if err != nil {
-		fmt.Println("Error sending Embed DM:", err)
-		return
-	}
-}
-
-var botCategory string = "1359830076455125185"
-
-func ReactionHandler(s *discordgo.Session, i *discordgo.MessageReactionAdd) {
-	chanIn, chanOut := sessions.SessionExists(i.Member.User.ID)
-	if chanIn != nil {
-		msg, err := s.ChannelMessage(i.ChannelID, i.MessageID)
-		if err != nil {
-			fmt.Println("Error fetching message:", err)
-			return
-		}
-		chanIn <- 2
-		sessionCopy := <-chanOut
-		if sessionCopy.CurrentApp != nil {
-			if msg.Author.ID == s.State.User.ID && i.MessageID == sessionCopy.CurrentApp.EmbedID && i.UserID != s.State.User.ID {
-				var state bool
-				defer func() {
-					sessionCopy.CurrentApp.App.Verdict = &state
-					handleApplicationDecision(s, true, *sessionCopy.CurrentApp.App)
-					chanIn <- 1
-				}()
-				if i.Emoji.Name == "✅" {
-					state = true
-				} else if i.Emoji.Name == "❌" {
-					state = false
-				}
-			}
-		}
-	}
-}
-
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
-		case "submit":
-
-			var message string
-			if len(i.ApplicationCommandData().Options) > 0 {
-				message = i.ApplicationCommandData().Options[0].StringValue()
-			}
-			if strings.Contains(message, "https://www.youtube.com") || strings.Contains(message, "https://www.youtu.be") || strings.Contains(message, "https://youtu.be") || strings.Contains(message, "https://youtube.com") {
-				if i.Member != nil {
-
-					err := submitApplication(i.Member, message)
-
-					videoID := utils.ExtractYouTubeID(message)
-					thumbnailURL := fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID)
-
-					var embed discordgo.MessageEmbed = discordgo.MessageEmbed{
-						Title:       "Success",
-						Description: "Your application has been submitted and is waiting to be reviewed!",
-						Color:       0x00ff7b,
-						Thumbnail: &discordgo.MessageEmbedThumbnail{
-							URL: thumbnailURL,
-						},
-					}
-					if err != nil {
-						embed = discordgo.MessageEmbed{
-							Title:       "Failed to submit your application",
-							Description: "Sorry, but an error occurred while submitting your application. Please try again, and if the error persists, you can report it here.",
-							Color:       0xff5500,
-						}
-					}
-					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-						Type: discordgo.InteractionResponseChannelMessageWithSource,
-						Data: &discordgo.InteractionResponseData{
-							Embeds: []*discordgo.MessageEmbed{&embed},
-							Flags:  discordgo.MessageFlagsEphemeral,
-						},
-					})
-				} else {
-					fmt.Println("No user detected!")
-				}
-			} else {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "Sorry, it seems there is no youtube link here! Try submitting again, but this time with a link to your application.",
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-			}
-		case "review":
-			hasRole := false
-			for _, roleID := range i.Member.Roles {
-				if roleID == roleAppReviewer {
-					hasRole = true
-					break
-				}
-			}
-			if !hasRole {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "You do not have permission to do this!",
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-				return
-			}
-			Session, _ := sessions.SessionOpen(s, i)
-			sessions.EnterLoop(Session)
-		case "listallapps":
-			fmt.Println(applications.Applications)
-			for _, appgroup := range applications.Applications {
-				for _, app := range appgroup.PendingApplications {
-					fmt.Println(app)
-				}
-
-			}
-
+		case "applybutton":
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Type: discordgo.InteractionResponseModal,
 				Data: &discordgo.InteractionResponseData{
-					Content: "hg",
-					Flags:   discordgo.MessageFlagsEphemeral,
+					CustomID: "submit_application" + i.Interaction.Member.User.ID,
+					Title:    "Submit your application",
+					Components: []discordgo.MessageComponent{
+						discordgo.ActionsRow{
+							Components: []discordgo.MessageComponent{
+								discordgo.TextInput{
+									CustomID:    "app_link",
+									Label:       "Application Link",
+									Style:       discordgo.TextInputShort,
+									Placeholder: "e.g https://www.youtube.com/",
+									Required:    true,
+									MaxLength:   300,
+									MinLength:   4,
+								},
+							},
+						},
+						discordgo.ActionsRow{
+							Components: []discordgo.MessageComponent{
+								discordgo.TextInput{
+									CustomID:    "join_reason",
+									Label:       "Why do you want to join?",
+									Placeholder: "e.g I need somewhere to make content.",
+									Style:       discordgo.TextInputParagraph,
+									Required:    true,
+									MinLength:   30,
+									MaxLength:   500,
+								},
+							},
+						},
+						discordgo.ActionsRow{
+							Components: []discordgo.MessageComponent{
+								discordgo.TextInput{
+									CustomID:    "unique_offer",
+									Label:       "What can you offer that NOBODY else can?",
+									Placeholder: "e.g I'm really skilled at singing, so I could do a kareoke event on the server.",
+									Style:       discordgo.TextInputParagraph,
+									Required:    true,
+									MinLength:   30,
+									MaxLength:   500,
+								},
+							},
+						},
+					},
 				},
 			})
-		case "wiperedis":
-			err := rds.Del("applications").Err()
-			if err != nil {
-				return
-			}
 		default:
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
 					Content: "Sorry, I couldn't recognize this command!",
+					//Flags:   discordgo.MessageFlagsEphemeral,
 				},
 			})
+		}
+	}
+}
+
+func handlInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.Type {
+	case discordgo.InteractionModalSubmit:
+		if i.ModalSubmitData().CustomID == "submit_application"+i.Interaction.Member.User.ID {
+			data := i.ModalSubmitData()
+			var joinreason string = data.Components[1].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			var unique_offer string = data.Components[2].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			var video_link string = data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+			_, err := url.ParseRequestURI(video_link)
+			if err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "You need to enter a youtube url!",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			threadData := &discordgo.ThreadStart{
+				Name:                fmt.Sprintf("%v's Application", i.Member.User.GlobalName), // Title of the forum post
+				AutoArchiveDuration: 60,                                                        // Auto-archive duration in minutes
+				Type:                discordgo.ChannelTypeGuildPublicThread,
+				AppliedTags:         []string{"1368576663608360981"}, // Optional: Tag IDs
+			}
+
+			now := time.Now()
+			day := now.Day()
+			suffix := utils.OrdinalSuffix(day)
+			month := now.Month().String()
+			year := now.Year()
+			hour := now.Format("15:04") // 24-hour format
+
+			formatted := fmt.Sprintf("<@%v>\nThis application was submitted on the %d%s of %s %d at %s\n%v", i.Interaction.Member.User.ID, day, suffix, month, year, hour, video_link)
+
+			messageData := &discordgo.MessageSend{
+				Content: formatted,
+				Embeds: []*discordgo.MessageEmbed{
+					{
+						URL:   video_link,
+						Color: 0x00ff00,
+						Fields: []*discordgo.MessageEmbedField{
+							{
+								Name:   "Reason for Joining:",
+								Value:  joinreason,
+								Inline: false,
+							},
+							{
+								Name:   "What only they can offer:",
+								Value:  unique_offer,
+								Inline: false,
+							},
+						},
+					},
+				},
+			}
+
+			thread, err := s.ForumThreadStartComplex("1368576531756220447", threadData, messageData)
+			if err != nil {
+				fmt.Println("Error creating forum post:", err)
+				return
+			}
+			err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("Your Application Thread has been created in <#%v>", thread.ID),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			if err != nil {
+				panic(err)
+			}
+
+			//Reactions
+			err = s.MessageReactionAdd(thread.ID, thread.LastMessageID, "✅")
+			if err != nil {
+				fmt.Println("Failed to react:", err)
+			}
+			err = s.MessageReactionAdd(thread.ID, thread.LastMessageID, "❌")
+			if err != nil {
+				fmt.Println("Failed to react:", err)
+			}
+		}
+	}
+}
+
+func handlReactionAdded(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+	if r.Member.User.ID != s.State.User.ID {
+		hasRole := false
+		for _, roleID := range r.Member.Roles {
+			fmt.Println(roleID)
+			if roleID == "1358026605330563185" {
+				hasRole = true
+				break
+			}
+		}
+		if !hasRole {
+			err := s.MessageReactionRemove(r.ChannelID, r.MessageID, "✅", r.UserID)
+			if err != nil {
+				fmt.Println("Failed to remove reaction:", err)
+			}
+			return
+		}
+
+		botmessage, err := s.ChannelMessage(r.ChannelID, r.MessageID)
+		if err != nil {
+			fmt.Println("Error fetching message:", err)
+			return
+		}
+
+		ping := strings.SplitN(botmessage.Content, "\n", 2)[0]
+		cleaned := strings.Map(func(r rune) rune {
+			if r == '<' || r == '>' || r == '@' {
+				return -1
+			}
+			return r
+		}, ping)
+
+		dmchannel, err := s.UserChannelCreate(cleaned)
+		if err != nil {
+			fmt.Println("Error creating DM channel:", err)
+			return
+		}
+
+		var embed *discordgo.MessageEmbed
+
+		tr := true
+		if r.Emoji.Name == "❌" {
+			newtags := []string{"1368861171939147796"}
+			_, err := s.ChannelEditComplex(r.ChannelID, &discordgo.ChannelEdit{
+				Archived:    &tr,
+				Locked:      &tr,
+				AppliedTags: &newtags,
+			})
+			if err != nil {
+				fmt.Println("Error locking and archiving thread:", err)
+			}
+			embed = &discordgo.MessageEmbed{
+				Title:       "Your application has been denied ❌",
+				Description: "Unfortunately, the application reviewing team has decided to **deny you** from the Midas SMP. Your best bet to get accepted is to reread the application rules/standards, learn some new skills and submit another new and improved application.",
+				Color:       0xff4070,
+				Footer: &discordgo.MessageEmbedFooter{
+					Text: "- Midas SMP Application Reviewers",
+				},
+			}
+		} else if r.Emoji.Name == "✅" {
+			newtags := []string{"1368861046550429727"}
+			_, err := s.ChannelEditComplex(r.ChannelID, &discordgo.ChannelEdit{
+				Archived:    &tr,
+				Locked:      &tr,
+				AppliedTags: &newtags,
+			})
+			if err != nil {
+				fmt.Println("Error locking and archiving thread:", err)
+			}
+			invite, err := s.ChannelInviteCreate("1343336810734026835", discordgo.Invite{
+				MaxUses:   1,
+				MaxAge:    0,
+				Temporary: false,
+				Unique:    true,
+			})
+			if err != nil {
+				fmt.Println(err)
+			}
+			embed = &discordgo.MessageEmbed{
+				Title:       "Congrats! Your application has been accepted ✅",
+				Description: fmt.Sprintf("Great job on your application, as the reviewing team have decided you seem like a good fit for the server! A one time invite is attached below, and it does have verification so don't try and invite anyone else. Good luck on the server! https://discord.gg/" + invite.Code),
+				Color:       0xBAFF29,
+				Footer: &discordgo.MessageEmbedFooter{
+					Text: "- Midas SMP Application Reviewers",
+				},
+			}
+		}
+		_, err = s.ChannelMessageSendEmbed(dmchannel.ID, embed)
+		if err != nil {
+			fmt.Println("Error sending Embed DM:", err)
+			return
 		}
 	}
 }
@@ -301,7 +318,8 @@ func main() {
 
 	dg.AddHandler(onStartup)
 	dg.AddHandler(CommandsHandler)
-	//dg.AddHandler(ReactionHandler)
+	dg.AddHandler(handlInteractionCreate)
+	dg.AddHandler(handlReactionAdded)
 
 	err = dg.Open()
 	if err != nil {

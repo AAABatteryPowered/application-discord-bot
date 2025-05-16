@@ -20,6 +20,7 @@ var Invoke chan int = make(chan int)
 var Output chan error = make(chan error)
 var WriteToPending chan datastructs.Application = make(chan datastructs.Application)
 var MarkAsReviewed chan datastructs.ApplicationVerdict = make(chan datastructs.ApplicationVerdict)
+var FetchApplications chan datastructs.AllApps = make(chan datastructs.AllApps)
 
 func ShowApplication(ds *discordgo.Session, s *datastructs.Session) {
 	if len(Applications) > 0 {
@@ -108,6 +109,10 @@ func HandleRedisInput() {
 				}
 			}
 		}
+		if id == 56 {
+			fmt.Println("waht")
+			FetchApplications <- Applications
+		}
 	}
 }
 
@@ -128,11 +133,8 @@ func OnStart(r *redis.Client) {
 			fmt.Println("Failed to sssUnmarshal ", err)
 			return
 		}
-		fmt.Println(field, value)
-		fmt.Println(field, appgroup)
 		Applications[field] = appgroup
 	}
-	fmt.Println(Applications)
 	go HandleRedisInput()
 	fmt.Println("all working up over here")
 }

@@ -30,3 +30,19 @@ func GetChannelInCategoryByName(s *discordgo.Session, guildID string, categoryID
 
 	return nil, nil
 }
+
+func OrdinalSuffix(day int) string {
+	if day >= 11 && day <= 13 {
+		return "th"
+	}
+	switch day % 10 {
+	case 1:
+		return "st"
+	case 2:
+		return "nd"
+	case 3:
+		return "rd"
+	default:
+		return "th"
+	}
+}
