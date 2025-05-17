@@ -43,6 +43,40 @@ func RegisterCommands(s *discordgo.Session) {
 	}
 }
 
+func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot {
+		return
+	}
+
+	if m.Content == "!reactionroles" {
+		// Delete user's message (optional)
+		err := s.ChannelMessageDelete(m.ChannelID, m.ID)
+		if err != nil {
+			fmt.Printf("Failed to delete command message: %v", err)
+		}
+
+		// Send embed
+		msg, err := s.ChannelMessageSendEmbed(m.ChannelID, &discordgo.MessageEmbed{
+			Title:       "Reaction Roles",
+			Description: "🚀 <@&1373246088978628733>\n🎁 <@&1373246065658036284>\n📊 <@&1373246111107514450>\n🌊 <@&1373245945453482075>",
+			Color:       0x00ff9d,
+		})
+		if err != nil {
+			fmt.Printf("Failed to send embed: %v", err)
+			return
+		}
+
+		// Add reactions
+		emojis := []string{"🚀", "🎁", "📊", "🌊"}
+		for _, emoji := range emojis {
+			err := s.MessageReactionAdd(m.ChannelID, msg.ID, emoji)
+			if err != nil {
+				fmt.Printf("Failed to add emoji %s: %v", emoji, err)
+			}
+		}
+	}
+}
+
 func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
@@ -194,8 +228,29 @@ func handlInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 }
 
+var reactionRoleMap = map[string]string{
+	"🚀": "1373246088978628733",
+	"🎁": "1373246065658036284",
+	"🌊": "1373245945453482075",
+	"📊": "1373246111107514450",
+}
+
 func handlReactionAdded(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	if r.Member.User.ID != s.State.User.ID {
+
+		if r.MessageID == "1373250549968797796" {
+			roleID, ok := reactionRoleMap[r.Emoji.Name]
+			if !ok {
+				return
+			}
+
+			err := s.GuildMemberRoleAdd(r.GuildID, r.UserID, roleID)
+			if err != nil {
+				fmt.Printf("Failed to add role: %v", err)
+			}
+			return
+		}
+
 		hasRole := false
 		for _, roleID := range r.Member.Roles {
 			fmt.Println(roleID)
@@ -289,6 +344,24 @@ func handlReactionAdded(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	}
 }
 
+func handlReactionRemoved(s *discordgo.Session, r *discordgo.MessageReactionRemove) {
+	if r.UserID == s.State.User.ID {
+		return
+	}
+
+	if r.MessageID == "1373250549968797796" {
+		roleID, ok := reactionRoleMap[r.Emoji.Name]
+		if !ok {
+			return
+		}
+
+		err := s.GuildMemberRoleRemove(r.GuildID, r.UserID, roleID)
+		if err != nil {
+			fmt.Printf("Failed to remove role: %v", err)
+		}
+	}
+}
+
 func InitRedis() {
 	rds = redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
@@ -320,6 +393,8 @@ func main() {
 	dg.AddHandler(CommandsHandler)
 	dg.AddHandler(handlInteractionCreate)
 	dg.AddHandler(handlReactionAdded)
+	dg.AddHandler(handlReactionRemoved)
+	dg.AddHandler(messageCreate)
 
 	err = dg.Open()
 	if err != nil {
