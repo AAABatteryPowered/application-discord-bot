@@ -12,19 +12,20 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/go-redis/redis"
+	"github.com/joho/godotenv"
 )
 
 // Bot Token (You need to replace this with your bot's token)
-const token = "MTMyNzU4Mjg0MTkwNjc5NDU1Ng.GsPPqZ.YSbhP_b0wcJ-PHRmOXTl9PNwySJWrOAC2kFmxI"
-const guildid = "1355623019971608706"
 
 var rds *redis.Client
+
+var token string
+var guildid string
 
 var CooldownCache map[string]int = make(map[string]int)
 
 func onStartup(s *discordgo.Session, r *discordgo.Ready) {
 	RegisterCommands(s)
-	//applications.OnStart(rds)
 }
 
 func RegisterCommands(s *discordgo.Session) {
@@ -377,7 +378,15 @@ func InitRedis() {
 }
 
 func main() {
-	// Create a new Discord session
+
+	err := godotenv.Load(".env")
+	if err != nil {
+		fmt.Errorf("Error loading .env file: %s", err)
+	}
+
+	token = os.Getenv("TOKEN")
+	guildid = os.Getenv("GUILDID")
+
 	dg, err := discordgo.New("Bot " + token)
 	if err != nil {
 		fmt.Println("Error creating Discord session,", err)
