@@ -5,6 +5,7 @@ go 1.23.3
 require (
 	github.com/bwmarrin/discordgo v0.28.1
 	github.com/go-redis/redis v6.15.9+incompatible
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 )
 

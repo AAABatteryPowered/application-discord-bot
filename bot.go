@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bot/giveaways"
+	"bot/levels"
+	"bot/redis"
 	"bot/utils"
 	"fmt"
 	"net/url"
@@ -11,13 +14,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/go-redis/redis"
 	"github.com/joho/godotenv"
 )
-
-// Bot Token (You need to replace this with your bot's token)
-
-var rds *redis.Client
 
 var token string
 var guildid string
@@ -33,6 +31,59 @@ func RegisterCommands(s *discordgo.Session) {
 		{
 			Name:        "applybutton",
 			Description: "Sends the apply button message",
+		},
+		{
+			Name:        "level",
+			Description: "Tells you what level you are and your xp progress to the next.",
+		},
+		{
+			Name:        "giveaway",
+			Description: "All of the subcommands for the giveaway feature.",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "create",
+					Description: "Creates a new giveaway",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "prize",
+							Description: "What's the prize?",
+							Required:    true,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "duration",
+							Description: "Duration in minutes",
+							Required:    true,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "winners",
+							Description: "Number of winners",
+							Required:    false,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "end",
+					Description: "End a giveaway early",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "id",
+							Description: "Giveaway ID",
+							Required:    true,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "list",
+					Description: "List active giveaways",
+				},
+			},
 		},
 	}
 
@@ -82,6 +133,40 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type == discordgo.InteractionApplicationCommand {
 		switch i.ApplicationCommandData().Name {
 		case "applybutton":
+			if i.Member.User.ID != "1113062986718908526" {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "You do not have permission to do this!",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+			button := discordgo.Button{
+				Label:    "Create an application",
+				Style:    discordgo.PrimaryButton,
+				CustomID: "application_form_open_button",
+				Emoji: &discordgo.ComponentEmoji{
+					Name: "📝",
+				},
+			}
+
+			actionRow := discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{button},
+			}
+
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Components: []discordgo.MessageComponent{actionRow},
+				},
+			})
+		}
+	}
+	if i.Type == discordgo.InteractionMessageComponent {
+		switch i.MessageComponentData().CustomID {
+		case "application_form_open_button":
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseModal,
 				Data: &discordgo.InteractionResponseData{
@@ -128,14 +213,6 @@ func CommandsHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 							},
 						},
 					},
-				},
-			})
-		default:
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "Sorry, I couldn't recognize this command!",
-					//Flags:   discordgo.MessageFlagsEphemeral,
 				},
 			})
 		}
@@ -363,20 +440,6 @@ func handlReactionRemoved(s *discordgo.Session, r *discordgo.MessageReactionRemo
 	}
 }
 
-func InitRedis() {
-	rds = redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "",
-		DB:       0,
-	})
-	_, err := rds.Ping().Result()
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	fmt.Println("#[Redis]: Started Successfully!")
-}
-
 func main() {
 
 	err := godotenv.Load(".env")
@@ -393,7 +456,7 @@ func main() {
 		return
 	}
 
-	InitRedis()
+	redis.InitRedis()
 
 	intents := discordgo.IntentsGuildInvites | discordgo.IntentsGuildMessages | discordgo.IntentsMessageContent | discordgo.IntentsGuildMembers | discordgo.IntentsGuildMessageReactions
 	dg.Identify.Intents = intents
@@ -405,11 +468,15 @@ func main() {
 	dg.AddHandler(handlReactionRemoved)
 	dg.AddHandler(messageCreate)
 
+	levels.Start(dg)
+	giveaways.Start(dg)
+
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("#[Main]: Error opening discordgo connection: ", err)
 		return
 	}
+
 	fmt.Println("#[Main]: Bot is running successfully!")
 
 	// Shutdown
