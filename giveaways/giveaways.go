@@ -16,12 +16,13 @@ type Giveaway struct {
 	Duration     int
 	CreationTime int64
 	Winners      int
-	Participants int
+	Creator      string
+	Participants []string
 	MessageID    string
 }
 
 var giveawayChannel int = 1373209434049740912
-var giveawayParticipants map[string][]string
+var giveaways map[string]Giveaway
 
 func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, options []*discordgo.ApplicationCommandInteractionDataOption) {
 	var prize string
@@ -114,11 +115,12 @@ func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, option
 		Duration:     duration,
 		CreationTime: logTime,
 		Winners:      winners,
+		Creator:      i.Member.User.ID,
 		Participants: 0,
 		MessageID:    embedmessage.ID,
 	}
 
-	giveawayParticipants[giveawayID] = []string{}
+	giveaways[giveawayID] = giveawayObject
 
 	giveawayJSON, err := json.Marshal(giveawayObject)
 	if err != nil {
@@ -142,7 +144,31 @@ func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, option
 }
 
 func enterGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, giveawayID string) {
+	giveaway, exists := giveaways[giveawayID]
+	if !exists {
+		return
+	}
 
+	giveaway.Participants = append(giveaway.Participants, i.Member.User.ID)
+
+	updatedembed := &discordgo.MessageEmbed{
+		Title:       giveaway.Prize,
+		Description: fmt.Sprintf("Ends in: %s (%s)\nHosted by: %s\nWinners: %d", fmt.Sprintf("<t:%d:R>", giveaway.CreationTime+int64(giveaway.Duration*60)), fmt.Sprintf("<t:%d:f>", giveaway.CreationTime+int64(giveaway.Duration*60)), fmt.Sprintf("<@%s>", giveaway.Creator), giveaway.Winners),
+		Color:       0x5496ff,
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Hosted by %s", i.Member.User.Username),
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	edit := &discordgo.MessageEdit{
+		Embeds: []*discordgo.MessageEmbed{updatedembed},
+	}
+
+	_, err := s.ChannelMessageEditComplex(edit)
+	if err != nil {
+		return
+	}
 }
 
 func onGiveawayCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
