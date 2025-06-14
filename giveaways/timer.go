@@ -1,6 +1,7 @@
 package giveaways
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -12,15 +13,17 @@ type Timer struct {
 
 func NewTimer(startTimeUnix int64, durationMinutes int, callback func()) *Timer {
 	startTime := time.Unix(startTimeUnix, 0)
-	endTime := startTime.Add(time.Duration(durationMinutes) * time.Minute)
+	endTime := startTime.Add(time.Duration(durationMinutes) * time.Second)
 
 	now := time.Now()
 	timeRemaining := endTime.Sub(now)
 
 	var timer *time.Timer
 	if timeRemaining <= 0 {
-		timer = time.AfterFunc(0, callback)
+		timer = time.NewTimer(0)
+		timer.Stop()
 	} else {
+		fmt.Println("what", timeRemaining)
 		timer = time.AfterFunc(timeRemaining, callback)
 	}
 

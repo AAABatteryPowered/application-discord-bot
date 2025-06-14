@@ -4,10 +4,12 @@ import (
 	botredis "bot/redis"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/go-redis/redis"
 	"github.com/google/uuid"
 )
 
@@ -16,13 +18,74 @@ type Giveaway struct {
 	Duration     int
 	CreationTime int64
 	Winners      int
-	Creator      string
+	Creator      *discordgo.Member
 	Participants []string
 	MessageID    string
+	Timer        *Timer
 }
 
 var giveawayChannel int = 1373209434049740912
-var giveaways map[string]Giveaway
+
+func getGiveaway(id string) (*Giveaway, error) {
+	succ, err := botredis.RedisC.HGet("giveaways", id).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var t Giveaway
+	err = json.Unmarshal([]byte(succ), &t)
+	if err != nil {
+		return nil, err
+	}
+
+	return &t, err
+}
+
+func endGiveaway(s *discordgo.Session, giveawayid string) {
+	giveaway, err := getGiveaway(giveawayid)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if giveaway == nil {
+		return
+	}
+
+	entrants := len(giveaway.Participants)
+	if entrants <= 0 {
+		s.ChannelMessageSend("1373209434049740912", "There were no participants - nobody won the prize!")
+		return
+	}
+	rand := rand.Intn(entrants)
+	s.ChannelMessageSend("1373209434049740912", fmt.Sprintf("Congratulations <@%s>! You won the **%s**!", giveaway.Participants[rand], giveaway.Prize))
+
+	updatedembed := &discordgo.MessageEmbed{
+		Title:       giveaway.Prize,
+		Description: fmt.Sprintf("Ended: %s (%s)\nHosted by: %s\nEntries: %d\nWinners: %s", fmt.Sprintf("<t:%d:R>", giveaway.CreationTime+int64(giveaway.Duration*1)), fmt.Sprintf("<t:%d:f>", giveaway.CreationTime+int64(giveaway.Duration*1)), fmt.Sprintf("<@%s>", giveaway.Creator.User.ID), len(giveaway.Participants), strings.Join(giveaway.Participants, ",")),
+		Color:       0x5496ff,
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Hosted by %s", fmt.Sprintf("<@%s>", giveaway.Creator.User.Username)),
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	edit := &discordgo.MessageEdit{
+		Channel: "1373209434049740912",
+		ID:      giveaway.MessageID,
+		Embeds:  &[]*discordgo.MessageEmbed{updatedembed},
+	}
+
+	_, err = s.ChannelMessageEditComplex(edit)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	botredis.RedisC.HDel("giveaways", giveawayid)
+}
 
 func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, options []*discordgo.ApplicationCommandInteractionDataOption) {
 	var prize string
@@ -43,7 +106,7 @@ func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, option
 	}
 
 	logTime := time.Now().Unix()
-	endTime := logTime + int64(duration*60)
+	endTime := logTime + int64(duration*1)
 
 	embed := &discordgo.MessageEmbed{
 		Title:       prize,
@@ -110,17 +173,21 @@ func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, option
 		return
 	}
 
+	startTime := time.Now().Unix()
+
 	giveawayObject := Giveaway{
 		Prize:        prize,
 		Duration:     duration,
 		CreationTime: logTime,
 		Winners:      winners,
-		Creator:      i.Member.User.ID,
-		Participants: 0,
+		Creator:      i.Member,
+		Participants: []string{},
 		MessageID:    embedmessage.ID,
 	}
 
-	giveaways[giveawayID] = giveawayObject
+	giveawayObject.Timer = NewTimer(startTime, duration, func() {
+		endGiveaway(s, giveawayID)
+	})
 
 	giveawayJSON, err := json.Marshal(giveawayObject)
 	if err != nil {
@@ -144,16 +211,36 @@ func createGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, option
 }
 
 func enterGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, giveawayID string) {
-	giveaway, exists := giveaways[giveawayID]
-	if !exists {
+	giveaway, err := getGiveaway(giveawayID)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if giveaway == nil {
+		return
+	}
+	for _, x := range giveaway.Participants {
+		if x == i.Member.User.ID {
+			return
+		}
+	}
+	giveaway.Participants = append(giveaway.Participants, i.Member.User.ID)
+
+	giveawayJSON, err := json.Marshal(giveaway)
+	if err != nil {
+		fmt.Printf("error marshaling giveaway: %v", err)
 		return
 	}
 
-	giveaway.Participants = append(giveaway.Participants, i.Member.User.ID)
+	err = botredis.RedisC.HSet("giveaways", giveawayID, giveawayJSON).Err()
+	if err != nil {
+		fmt.Printf("error setting giveaway in Redis: %v", err)
+		return
+	}
 
 	updatedembed := &discordgo.MessageEmbed{
 		Title:       giveaway.Prize,
-		Description: fmt.Sprintf("Ends in: %s (%s)\nHosted by: %s\nWinners: %d", fmt.Sprintf("<t:%d:R>", giveaway.CreationTime+int64(giveaway.Duration*60)), fmt.Sprintf("<t:%d:f>", giveaway.CreationTime+int64(giveaway.Duration*60)), fmt.Sprintf("<@%s>", giveaway.Creator), giveaway.Winners),
+		Description: fmt.Sprintf("Ends in: %s (%s)\nHosted by: %s\nEntries: %d\nWinners: %d", fmt.Sprintf("<t:%d:R>", giveaway.CreationTime+int64(giveaway.Duration*1)), fmt.Sprintf("<t:%d:f>", giveaway.CreationTime+int64(giveaway.Duration*1)), fmt.Sprintf("<@%s>", giveaway.Creator), len(giveaway.Participants), giveaway.Winners),
 		Color:       0x5496ff,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: fmt.Sprintf("Hosted by %s", i.Member.User.Username),
@@ -161,14 +248,27 @@ func enterGiveaway(s *discordgo.Session, i *discordgo.InteractionCreate, giveawa
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
+	fmt.Println(giveaway.Participants)
+
 	edit := &discordgo.MessageEdit{
-		Embeds: []*discordgo.MessageEmbed{updatedembed},
+		Channel: "1373209434049740912",
+		ID:      giveaway.MessageID,
+		Embeds:  &[]*discordgo.MessageEmbed{updatedembed},
 	}
 
-	_, err := s.ChannelMessageEditComplex(edit)
+	_, err = s.ChannelMessageEditComplex(edit)
 	if err != nil {
+		fmt.Println(err)
 		return
 	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: "Successfully entered you into the giveaway!",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
 }
 
 func onGiveawayCommands(s *discordgo.Session, i *discordgo.InteractionCreate) {
