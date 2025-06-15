@@ -101,29 +101,48 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if m.Content == "!reactionroles" {
-		// Delete user's message (optional)
+
 		err := s.ChannelMessageDelete(m.ChannelID, m.ID)
 		if err != nil {
 			fmt.Printf("Failed to delete command message: %v", err)
 		}
 
-		// Send embed
-		msg, err := s.ChannelMessageSendEmbed(m.ChannelID, &discordgo.MessageEmbed{
+		embed := &discordgo.MessageEmbed{
 			Title:       "Reaction Roles",
-			Description: "🚀 <@&1373246088978628733>\n🎁 <@&1373246065658036284>\n📊 <@&1373246111107514450>\n🌊 <@&1373245945453482075>",
-			Color:       0x00ff9d,
+			Description: "There are a fair amount of pings to choose from, for regions where people can ping to pvp people, things from the server you wish to be pinged about, or notifications every time a major upload or stream happens on the server! I'll go through each of them and highlight all the details of each role.",
+			Color:       0x0099ff,
+			Fields: []*discordgo.MessageEmbedField{
+				{
+					Name:   "Matchmaking roles",
+					Value:  "The :flag_eu:<@&1383769447575322634>,  :flag_us:<@&1383769579204902983> and :flag_cn:<@&1383769566747955332> roles are used for when people want to pvp, and ping the entire role to find someone in their region who wants to pvp. Keep in mind **these will be heavily pinged**. If you don't want a lot of pings, stay clear from these roles.Otherwise, it's a good way to find opponents where you can both play on low ping.",
+					Inline: false,
+				},
+				{
+					Name:   "Content ping roles",
+					Value:  "Very straightforward, the <@&1380821825218678784>, <@&1380821984681787483> and <@&1380822067691126784> roles ping you whenever someone uploads, streams or tweets.",
+					Inline: false,
+				},
+				{
+					Name:   "Others",
+					Value:  "These include getting pinged for people being accepted, giveaways, events and polls. I recommend you select all of these.",
+					Inline: false,
+				},
+			},
+		}
+
+		msg, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{
+			Content: "Hey, these are **reaction roles**! To personalize your experience, click on some of the emojis on the bottom, and above it tells you what role they give you. Change your mind? That's fine! You can always unreact and the ping will be taken away from you.",
+			Embeds:  []*discordgo.MessageEmbed{embed},
 		})
 		if err != nil {
 			fmt.Printf("Failed to send embed: %v", err)
 			return
 		}
 
-		// Add reactions
-		emojis := []string{"🚀", "🎁", "📊", "🌊"}
-		for _, emoji := range emojis {
-			err := s.MessageReactionAdd(m.ChannelID, msg.ID, emoji)
+		for i, _ := range reactionRoleMap {
+			err := s.MessageReactionAdd(m.ChannelID, msg.ID, i)
 			if err != nil {
-				fmt.Printf("Failed to add emoji %s: %v", emoji, err)
+				fmt.Printf("Failed to add emoji %s: %v", i, err)
 			}
 		}
 	}
@@ -307,16 +326,23 @@ func handlInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate
 }
 
 var reactionRoleMap = map[string]string{
-	"🚀": "1373246088978628733",
-	"🎁": "1373246065658036284",
-	"🌊": "1373245945453482075",
-	"📊": "1373246111107514450",
+	"🔴":  "1380821825218678784",
+	"🇪🇺": "1383769447575322634",
+	"🇨🇳": "1383769566747955332",
+	"🇺🇸": "1383769579204902983",
+	"🗺️": "1383769598457020538",
+	"🟣":  "1380821984681787483",
+	"🔵":  "1380822067691126784",
+	"🚀":  "1373246088978628733",
+	"🎁":  "1373246065658036284",
+	"🌊":  "1373245945453482075",
+	"📊":  "1373246111107514450",
 }
 
 func handlReactionAdded(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 	if r.Member.User.ID != s.State.User.ID {
 
-		if r.MessageID == "1373250549968797796" {
+		if r.MessageID == "1383822246577180753" {
 			roleID, ok := reactionRoleMap[r.Emoji.Name]
 			if !ok {
 				return
@@ -404,6 +430,7 @@ func handlReactionAdded(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 			})
 			if err != nil {
 				fmt.Println(err)
+				return
 			}
 			embed = &discordgo.MessageEmbed{
 				Title:       "Congrats! Your application has been accepted ✅",
@@ -427,7 +454,7 @@ func handlReactionRemoved(s *discordgo.Session, r *discordgo.MessageReactionRemo
 		return
 	}
 
-	if r.MessageID == "1373250549968797796" {
+	if r.MessageID == "1383822246577180753" {
 		roleID, ok := reactionRoleMap[r.Emoji.Name]
 		if !ok {
 			return
