@@ -467,6 +467,7 @@ func handlReactionRemoved(s *discordgo.Session, r *discordgo.MessageReactionRemo
 	}
 }
 
+// recommiting cuz i left the bot token
 func main() {
 
 	err := godotenv.Load(".env")
